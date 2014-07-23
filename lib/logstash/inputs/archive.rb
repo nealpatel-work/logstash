@@ -3,6 +3,8 @@ require "logstash/inputs/base"
 require "logstash/namespace"
 
 require "socket" # for Socket.gethostname
+require "fileutils"
+require "shellwords"
 
 # By default, each event is assumed to be one line. If you would like
 # to join multiple log lines into one event, you'll want to use the
@@ -20,8 +22,9 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   # You may also configure multiple paths. See an example
   # on the [Logstash configuration page](configuration#array).
   #
-  # Currently, gzip and bzip2 archives are supported, but support
-  # for 7zip, rar, and zip is coming soon.
+  # Currently, gzip (.gz) and bzip2 (.bz2, NOT tar.bz2) archives
+  # are supported.
+  # Support for 7zip, rar, and zip is coming soon.
   config :path, :validate => :array, :required => true
 
   # Exclusions (matched against the filename, not full path). Globs
@@ -107,7 +110,7 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
     begin
       gz = Zlib::GzipReader.open(path)
     rescue Zlib::GzipFile::Error
-      @logger.warn("A GZip-related error occured when processing #{path}. Ignoring...")
+      @logger.warn("An error occured when decompressing #{path}. Ignoring...")
       return
     rescue
       @logger.warn("An error occured when processing #{path}. Ignoring...")
@@ -127,6 +130,31 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
   private
   def process_bzip2(queue, path, hostname)
-    @logger.warn("BZIP2 NOT IMPLEMENTED YET")
+    basename = File.basename(path)
+    tmp_file = "/tmp/#{Time.now.to_i}"
+
+    system("/bin/bzcat #{path.shellescape} > #{tmp_file}")
+
+    if $? != 0
+      @logger.warn("An error occured when extracting #{path}. Ignoring...")
+      return
+    end
+
+    begin
+      file = File.open(tmp_file)
+      file.each_line do |line|
+        @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
+        @codec.decode(line) do |event|
+          decorate(event)
+          event["host"] ||= hostname
+          event["path"] ||= path
+          queue << event
+        end
+      end
+    rescue
+      @logger.warn("An error occured when processing #{path}. Ignoring...")
+    end
+
+    FileUtils.rm(tmp_file)
   end # def process_bzip2
 end # class LogStash::Inputs::File
