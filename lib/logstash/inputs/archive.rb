@@ -19,6 +19,9 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   #
   # You may also configure multiple paths. See an example
   # on the [Logstash configuration page](configuration#array).
+  #
+  # Currently, gzip and bzip2 archives are supported, but support
+  # for 7zip, rar, and zip is coming soon.
   config :path, :validate => :array, :required => true
 
   # Exclusions (matched against the filename, not full path). Globs
@@ -42,6 +45,7 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
     @logger.info("Registering archive input", :path => @path)
 
     @exclude = [] unless defined? @exclude
+
     @path.each do |path|
       if Pathname.new(path).relative?
         raise ArgumentError.new("File paths must be absolute, relative path specified: #{path}")
@@ -76,6 +80,30 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   def process(queue, path)
     hostname = Socket.gethostname
 
+    if File.fnmatch?('*.gz', path)
+      process_gzip(queue, path, hostname)
+    elsif File.fnmatch?('*.bz2', path)
+      process_bzip2(queue, path, hostname)
+    else
+      # try to detect compression type via magic numbers
+      begin
+        magic_number = File.open(path, 'rb').read(2)
+        case magic_number
+        when "\x1f\x8b"
+          process_gzip(queue, path, hostname)
+        when "BZ"
+          process_bzip2(queue, path, hostname)
+        else
+          @logger.warn("Unsupported archive type: #{path}. Ignoring...")
+        end
+      rescue
+        @logger.warn("Could not identify compression of #{path}. Ignoring...")
+      end
+    end
+  end # def process
+
+  private
+  def process_gzip(queue, path, hostname)
     begin
       gz = Zlib::GzipReader.open(path)
     rescue Zlib::GzipFile::Error
@@ -95,5 +123,10 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
         queue << event
       end
     end
-  end # def process
+  end # def process_gzip
+
+  private
+  def process_bzip2(queue, path, hostname)
+    @logger.warn("BZIP2 NOT IMPLEMENTED YET")
+  end # def process_bzip2
 end # class LogStash::Inputs::File
