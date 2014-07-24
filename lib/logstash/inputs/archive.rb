@@ -23,9 +23,9 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   # on the [Logstash configuration page](configuration#array).
   #
   # Currently, this plugin supports the following archive types:
-  # gzip (.gz), bzip2 (.bz2, NOT tar.bz2), and 7zip (.7z)
+  # gzip (.gz), tar-bzip2 (.tar.bz2), bzip2 (.bz2), and 7zip (.7z)
   #
-  # Support for tar.bz, tar.bz2, rar, and zip is coming soon.
+  # Support for tar.bz, rar, and zip is coming soon.
   config :path, :validate => :array, :required => true
 
   # Exclusions (matched against the filename, not full path). Globs
@@ -61,17 +61,31 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   def run(queue)
     processed_files = Set.new
 
+    has_globs = false
+
     loop do
       @path.each do |globpath|
+        has_globs ||= !!(globpath =~ /[*?\[\]^{}]/)
+
         filenames = Dir.glob(globpath)
 
         for filename in filenames
           next if processed_files.member?(filename)
           next if @exclude.any? { |rule| File.fnmatch?(rule, File.basename(filename)) }
 
-          process(queue, filename)
+          begin
+            process(queue, filename)
+          rescue
+            @logger.error("A critical error occured when processing #{filename}. Skipping...")
+          end
+
           processed_files << filename
         end
+      end
+
+      unless has_globs
+        # if no globs were given, then there is nothing else we can do
+        break
       end
 
       sleep(@discover_interval)
@@ -86,6 +100,8 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
     if File.fnmatch?('*.gz', path)
       process_gzip(queue, path, hostname)
+    elsif File.fnmatch?('*.tar.bz2', path)
+      process_tar_bzip2(queue, path, hostname)
     elsif File.fnmatch?('*.bz2', path)
       process_bzip2(queue, path, hostname)
     elsif File.fnmatch?('*.7z', path)
@@ -94,18 +110,19 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       # try to detect compression type via magic numbers
       begin
         magic_number = File.open(path, 'rb').read(2)
-        case magic_number
-        when "\x1f\x8b"
-          process_gzip(queue, path, hostname)
-        when "BZ"
-          process_bzip2(queue, path, hostname)
-        when "7z"
-          process_7zip(queue, path, hostname)
-        else
-          @logger.warn("Unsupported archive type: #{path}. Ignoring...")
-        end
       rescue
         @logger.warn("Could not identify compression of #{path}. Ignoring...")
+      end
+
+      case magic_number
+      when "\x1f\x8b"
+        process_gzip(queue, path, hostname)
+      when "BZ" # it could be either .tar.bz2 or .bz2; let's assume .bz2
+        process_bzip2(queue, path, hostname)
+      when "7z"
+        process_7zip(queue, path, hostname)
+      else
+        @logger.warn("Unsupported archive type: #{path}. Ignoring...")
       end
     end
   end # def process
@@ -132,6 +149,41 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       end
     end
   end # def process_gzip
+
+  private
+  def process_tar_bzip2(queue, path, hostname)
+    tmp_dir = "/tmp/#{Time.now.to_i}"
+
+    FileUtils.mkdir(tmp_dir)
+    system("/bin/tar -xjf #{path.shellescape} -C #{tmp_dir} 2>&1 > /dev/null")
+
+    if $? != 0
+      @logger.warn("An error occured when extracting #{path}. Ignoring...")
+      FileUtils.rm_rf(tmp_dir)
+      return
+    end
+
+    Dir.glob("#{tmp_dir}/**/*.*").each do |ext_filename|
+      ext_basename = File.basename(ext_filename)
+
+      begin
+        file = File.open(ext_filename)
+        file.each_line do |line|
+          @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
+          @codec.decode(line) do |event|
+            decorate(event)
+            event["host"] ||= hostname
+            event["path"] ||= path
+            queue << event
+          end
+        end
+      rescue
+        @logger.warn("An error occured when processing #{path}:#{ext_basename}. Ignoring...")
+      end
+    end
+
+    FileUtils.rm_rf(tmp_dir)
+  end # def process_tar_bzip2
 
   private
   def process_bzip2(queue, path, hostname)
@@ -175,7 +227,7 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       return
     end
 
-    Dir["#{tmp_dir}/**/*.*"].each do |ext_filename|
+    Dir.glob("#{tmp_dir}/**/*.*").each do |ext_filename|
       ext_basename = File.basename(ext_filename)
 
       begin
