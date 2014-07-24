@@ -6,6 +6,16 @@ require "socket" # for Socket.gethostname
 require "fileutils"
 require "shellwords"
 
+# Read events from log files within an archive.
+#
+# This plugin supports many different types of archives. To see
+# which archive formats are supported, please refer to the
+# documentation for the `path` option (below). This plugin can
+# handle very large archive files with ease.
+#
+# This plugin also supports watching directories (i.e., periodically
+# evaluating a glob and checking whether any new files have appeared).
+#
 # By default, each event is assumed to be one line. If you would like
 # to join multiple log lines into one event, you'll want to use the
 # multiline codec.
@@ -27,6 +37,16 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   # and rar (.rar).
   #
   # Support for tar.bz and zip is coming soon.
+  #
+  # Please note that you may need to install additional packages
+  # in order to process certain types of archives (anything other
+  # than *.gz).
+  #
+  # Please note that the archive will be decompressed using a
+  # decompression algorithm selected from the file extension. For
+  # example, the file 'MyArchive.rar' would be decompressed using
+  # the `unrar` tool. If this approach fails, the decompression
+  # algorithm will fallback to using magic numbers.
   config :path, :validate => :array, :required => true
 
   # Exclusions (matched against the filename, not full path). Globs
