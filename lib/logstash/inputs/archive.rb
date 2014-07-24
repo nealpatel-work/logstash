@@ -22,9 +22,10 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   # You may also configure multiple paths. See an example
   # on the [Logstash configuration page](configuration#array).
   #
-  # Currently, gzip (.gz) and bzip2 (.bz2, NOT tar.bz2) archives
-  # are supported.
-  # Support for 7zip, rar, and zip is coming soon.
+  # Currently, this plugin supports the following archive types:
+  # gzip (.gz), bzip2 (.bz2, NOT tar.bz2), and 7zip (.7z)
+  #
+  # Support for tar.bz, tar.bz2, rar, and zip is coming soon.
   config :path, :validate => :array, :required => true
 
   # Exclusions (matched against the filename, not full path). Globs
@@ -87,6 +88,8 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       process_gzip(queue, path, hostname)
     elsif File.fnmatch?('*.bz2', path)
       process_bzip2(queue, path, hostname)
+    elsif File.fnmatch?('*.7z', path)
+      process_7zip(queue, path, hostname)
     else
       # try to detect compression type via magic numbers
       begin
@@ -96,6 +99,8 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
           process_gzip(queue, path, hostname)
         when "BZ"
           process_bzip2(queue, path, hostname)
+        when "7z"
+          process_7zip(queue, path, hostname)
         else
           @logger.warn("Unsupported archive type: #{path}. Ignoring...")
         end
@@ -130,7 +135,6 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
   private
   def process_bzip2(queue, path, hostname)
-    basename = File.basename(path)
     tmp_file = "/tmp/#{Time.now.to_i}"
 
     system("/bin/bzcat #{path.shellescape} > #{tmp_file}")
@@ -157,4 +161,39 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
     FileUtils.rm(tmp_file)
   end # def process_bzip2
+
+  private
+  def process_7zip(queue, path, hostname)
+    tmp_dir = "/tmp/#{Time.now.to_i}"
+
+    FileUtils.mkdir(tmp_dir)
+    system("/usr/bin/7za e -o#{tmp_dir} -y #{path.shellescape} 2>&1 > /dev/null")
+
+    if $? != 0
+      @logger.warn("An error occured when extracting #{path}. Ignoring...")
+      FileUtils.rm_rf(tmp_dir)
+      return
+    end
+
+    Dir["#{tmp_dir}/**/*.*"].each do |ext_filename|
+      ext_basename = File.basename(ext_filename)
+
+      begin
+        file = File.open(ext_filename)
+        file.each_line do |line|
+          @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
+          @codec.decode(line) do |event|
+            decorate(event)
+            event["host"] ||= hostname
+            event["path"] ||= path
+            queue << event
+          end
+        end
+      rescue
+        @logger.warn("An error occured when processing #{path}:#{ext_basename}. Ignoring...")
+      end
+    end
+
+    FileUtils.rm_rf(tmp_dir)
+  end # def process_7zip
 end # class LogStash::Inputs::File
