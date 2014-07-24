@@ -5,6 +5,7 @@ require "logstash/namespace"
 require "socket" # for Socket.gethostname
 require "fileutils"
 require "shellwords"
+require "mkmf"
 
 # By default, each event is assumed to be one line. If you would like
 # to join multiple log lines into one event, you'll want to use the
@@ -41,12 +42,42 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   # How often we expand globs to discover new files to watch.
   config :discover_interval, :validate => :number, :default => 15
 
+  private
+  def check_dependency(program, path)
+    case program
+    when 'tar_bzip2'
+      if system('/usr/bin/which tar 2>&1 > /dev/null')
+        return true
+      else
+        @logger.warn("You need to have tar (package tar) installed to process #{path}. Skipping...")
+        return false
+      end
+    when 'bzip2'
+      if system('/usr/bin/which bzcat 2>&1 > /dev/null')
+          return true
+      else
+        @logger.warn("You need to have bzcat (package bzip2) installed to process #{path}. Skipping...")
+        return false
+      end
+    when '7zip'
+      if system('/usr/bin/which 7za 2>&1 > /dev/null')
+        return true
+      else
+        @logger.warn("You need to have 7za (package p7zip) installed to process #{path}. Skipping...")
+        return false
+      end
+    else
+      return true
+    end
+  end
+
   public
   def register
     require 'set'
     require 'zlib'
 
     @logger.info("Registering archive input", :path => @path)
+    @logger.info("Please note that additional packages may be required to process certain archive formats.")
 
     @exclude = [] unless defined? @exclude
 
@@ -101,11 +132,11 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
     if File.fnmatch?('*.gz', path)
       process_gzip(queue, path, hostname)
     elsif File.fnmatch?('*.tar.bz2', path)
-      process_tar_bzip2(queue, path, hostname)
+      process_tar_bzip2(queue, path, hostname) if check_dependency('tar_bzip2', path)
     elsif File.fnmatch?('*.bz2', path)
-      process_bzip2(queue, path, hostname)
+      process_bzip2(queue, path, hostname) if check_dependency('bzip2', path)
     elsif File.fnmatch?('*.7z', path)
-      process_7zip(queue, path, hostname)
+      process_7zip(queue, path, hostname) if check_dependency('7zip', path)
     else
       # try to detect compression type via magic numbers
       begin
@@ -118,9 +149,9 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       when "\x1f\x8b"
         process_gzip(queue, path, hostname)
       when "BZ" # it could be either .tar.bz2 or .bz2; let's assume .bz2
-        process_bzip2(queue, path, hostname)
+        process_bzip2(queue, path, hostname) if check_dependency('bzip2', path)
       when "7z"
-        process_7zip(queue, path, hostname)
+        process_7zip(queue, path, hostname) if check_dependency('7zip', path)
       else
         @logger.warn("Unsupported archive type: #{path}. Ignoring...")
       end
@@ -152,10 +183,10 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
   private
   def process_tar_bzip2(queue, path, hostname)
-    tmp_dir = "/tmp/#{Time.now.to_i}"
+    tmp_dir = "/tmp/ls#{Time.now.to_i}"
 
     FileUtils.mkdir(tmp_dir)
-    system("/bin/tar -xjf #{path.shellescape} -C #{tmp_dir} 2>&1 > /dev/null")
+    system("/usr/bin/env tar -xjf #{path.shellescape} -C #{tmp_dir} 2>&1 > /dev/null")
 
     if $? != 0
       @logger.warn("An error occured when extracting #{path}. Ignoring...")
@@ -187,9 +218,9 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
   private
   def process_bzip2(queue, path, hostname)
-    tmp_file = "/tmp/#{Time.now.to_i}"
+    tmp_file = "/tmp/ls#{Time.now.to_i}"
 
-    system("/bin/bzcat #{path.shellescape} > #{tmp_file}")
+    system("/usr/bin/env bzcat #{path.shellescape} > #{tmp_file}")
 
     if $? != 0
       @logger.warn("An error occured when extracting #{path}. Ignoring...")
@@ -216,10 +247,10 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
   private
   def process_7zip(queue, path, hostname)
-    tmp_dir = "/tmp/#{Time.now.to_i}"
+    tmp_dir = "/tmp/ls#{Time.now.to_i}"
 
     FileUtils.mkdir(tmp_dir)
-    system("/usr/bin/7za e -o#{tmp_dir} -y #{path.shellescape} 2>&1 > /dev/null")
+    system("/usr/bin/env 7za e -o#{tmp_dir} -y #{path.shellescape} 2>&1 > /dev/null")
 
     if $? != 0
       @logger.warn("An error occured when extracting #{path}. Ignoring...")
