@@ -34,19 +34,16 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   #
   # Currently, this plugin supports the following archive types:
   # gzip (.gz), tar-bzip2 (.tar.bz2), bzip2 (.bz2), 7zip (.7z),
-  # and rar (.rar).
-  #
-  # Support for tar.bz and zip is coming soon.
+  # and rar (.rar). Support for tar.bz and zip is coming soon.
   #
   # Please note that you may need to install additional packages
   # in order to process certain types of archives (anything other
   # than *.gz).
   #
-  # Please note that the archive will be decompressed using a
-  # decompression algorithm selected from the file extension. For
-  # example, the file 'MyArchive.rar' would be decompressed using
-  # the `unrar` tool. If this approach fails, the decompression
-  # algorithm will fallback to using magic numbers.
+  # Please note that the archives will be decompressed based on
+  # their file extensions. For example, the file 'MyArchive.rar'
+  # would be decompressed using `unrar`. If this approach fails,
+  # the archives will be decompressed based on their magic numbers.
   config :path, :validate => :array, :required => true
 
   # Exclusions (matched against the filename, not full path). Globs
@@ -60,6 +57,8 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   config :exclude, :validate => :array
 
   # How often we expand globs to discover new files to watch.
+  #
+  # This is only used when the `path` option contains a glob.
   config :discover_interval, :validate => :number, :default => 15
 
   private
