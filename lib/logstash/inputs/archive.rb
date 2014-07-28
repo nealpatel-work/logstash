@@ -8,10 +8,10 @@ require "shellwords"
 
 # Read events from log files within an archive.
 #
-# This plugin supports many different types of archives. To see
-# which archive formats are supported, please refer to the
-# documentation for the `path` option (below). This plugin can
-# handle very large archive files with ease.
+# This plugin supports many different types of archives. To see which
+# archive formats are supported, please refer to the documentation for
+# the `path` option (below). This plugin can handle very large archive
+# files with ease.
 #
 # This plugin also supports watching directories (i.e., periodically
 # evaluating a glob and checking whether any new files have appeared).
@@ -21,33 +21,33 @@ require "shellwords"
 # multiline codec.
 class LogStash::Inputs::Archive < LogStash::Inputs::Base
   config_name "archive"
-  milestone 1
+  milestone 2
 
   default :codec, "line"
 
-  # The path(s) to the file(s) to use as an input.
-  # You can use globs here, such as `/var/log/*.log`
-  # Paths must be absolute and cannot be relative.
+  # The path(s) to the file(s) to use as an input. You can use globs
+  # here, such as `/var/log/*.log`. Paths must be absolute and cannot
+  # be relative.
   #
-  # You may also configure multiple paths. See an example
-  # on the [Logstash configuration page](configuration#array).
+  # You may also configure multiple paths. See an example on the
+  # [Logstash configuration page](configuration#array).
   #
   # Currently, this plugin supports the following archive types:
   # gzip (.gz), tar-bzip2 (.tar.bz2), bzip2 (.bz2), 7zip (.7z),
-  # and rar (.rar). Support for tar.bz and zip is coming soon.
+  # rar (.rar), and zip (.zip).
   #
-  # Please note that you may need to install additional packages
-  # in order to process certain types of archives (anything other
-  # than *.gz).
+  # Please note that you may need to install additional packages in
+  # order to process certain types of archives (anything other than
+  # *.gz).
   #
-  # Please note that the archives will be decompressed based on
-  # their file extensions. For example, the file 'MyArchive.rar'
-  # would be decompressed using `unrar`. If this approach fails,
-  # the archives will be decompressed based on their magic numbers.
+  # Please note that the archives will be decompressed based on their
+  # file extensions. For example, the file 'MyArchive.rar' would be
+  # decompressed using `unrar`. If this approach fails, the archives
+  # will be decompressed based on their magic numbers.
   config :path, :validate => :array, :required => true
 
-  # Exclusions (matched against the filename, not full path). Globs
-  # are valid here, too. For example, if you have
+  # Exclusions (matched against the filename, not full path). Globs are
+  # valid here, too. For example, if you have
   #
   #     path => "/var/log/*.gz"
   #
@@ -62,38 +62,12 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   config :discover_interval, :validate => :number, :default => 15
 
   private
-  def check_dependency(program, path)
-    case program
-    when 'tar_bzip2'
-      if system('/usr/bin/which tar 2>&1 > /dev/null')
-        return true
-      else
-        @logger.warn("You need to have tar (package tar) installed to process #{path}. Skipping...")
-        return false
-      end
-    when 'bzip2'
-      if system('/usr/bin/which bzcat 2>&1 > /dev/null')
-          return true
-      else
-        @logger.warn("You need to have bzcat (package bzip2) installed to process #{path}. Skipping...")
-        return false
-      end
-    when '7zip'
-      if system('/usr/bin/which 7za 2>&1 > /dev/null')
-        return true
-      else
-        @logger.warn("You need to have 7za (package p7zip) installed to process #{path}. Skipping...")
-        return false
-      end
-    when 'rar'
-      if system('/usr/bin/which unrar 2>&1 > /dev/null')
-        return true
-      else
-        @logger.warn("You need to have unrar (package unrar) installed to process #{path}. Skipping...")
-        return false
-      end
-    else
+  def enforce_dependency(program, package, path)
+    if system("/usr/bin/which #{program} 2>&1 > /dev/null")
       return true
+    else
+      @logger.warn("You need to have #{program} (package #{package}) installed to process #{path}. Skipping...")
+      return false
     end
   end
 
@@ -155,17 +129,21 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
   def process(queue, path)
     hostname = Socket.gethostname
 
+    # try to detect compression type the file extension
     if File.fnmatch?('*.gz', path)
       process_gzip(queue, path, hostname)
     elsif File.fnmatch?('*.tar.bz2', path)
-      process_tar_bzip2(queue, path, hostname) if check_dependency('tar_bzip2', path)
+      process_tar_bzip2(queue, path, hostname)
     elsif File.fnmatch?('*.bz2', path)
-      process_bzip2(queue, path, hostname) if check_dependency('bzip2', path)
+      process_bzip2(queue, path, hostname)
     elsif File.fnmatch?('*.7z', path)
-      process_7zip(queue, path, hostname) if check_dependency('7zip', path)
+      process_7zip(queue, path, hostname)
     elsif File.fnmatch?('*.rar', path)
-      process_rar(queue, path, hostname) if check_dependency('rar', path)
+      process_rar(queue, path, hostname)
+    elsif File.fnmatch?('*.zip', path)
+      process_zip(queue, path, hostname)
     else
+      # the file extension didn't help!
       # try to detect compression type via magic numbers
       begin
         magic_number = File.open(path, 'rb').read(2)
@@ -177,16 +155,29 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       when "\x1f\x8b"
         process_gzip(queue, path, hostname)
       when "BZ" # it could be either .tar.bz2 or .bz2; let's assume .bz2
-        process_bzip2(queue, path, hostname) if check_dependency('bzip2', path)
+        process_bzip2(queue, path, hostname)
       when "7z"
-        process_7zip(queue, path, hostname) if check_dependency('7zip', path)
+        process_7zip(queue, path, hostname)
       when "Ra"
-        process_rar(queue, path, hostname) if check_dependency('rar', path)
+        process_rar(queue, path, hostname)
+      when "PK"
+        process_zip(queue, path, hostname)
       else
         @logger.warn("Unsupported archive type: #{path}. Ignoring...")
       end
     end
   end # def process
+
+  private
+  def _process_line(queue, path, hostname, line)
+    @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
+    @codec.decode(line) do |event|
+      decorate(event)
+      event["host"] ||= hostname
+      event["path"] ||= path
+      queue << event
+    end
+  end
 
   private
   def process_gzip(queue, path, hostname)
@@ -201,18 +192,30 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
     end
 
     gz.each_line do |line|
-      @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
-      @codec.decode(line) do |event|
-        decorate(event)
-        event["host"] ||= hostname
-        event["path"] ||= path
-        queue << event
-      end
+      _process_line(queue, path, hostname, line)
     end
   end # def process_gzip
 
   private
+  def _process_extracted_files(queue, path, hostname, filenames)
+    filenames.each do |ext_filename|
+      ext_basename = File.basename(ext_filename)
+
+      begin
+        file = File.open(ext_filename)
+        file.each_line do |line|
+          _process_line(queue, path, hostname, line)
+        end
+      rescue
+        @logger.warn("An error occured when processing #{path}:#{ext_basename}. Ignoring...")
+      end
+    end
+  end
+
+  private
   def process_tar_bzip2(queue, path, hostname)
+    return unless enforce_dependency('tar', 'tar', path)
+
     tmp_dir = "/tmp/ls#{Time.now.to_i}"
 
     FileUtils.mkdir(tmp_dir)
@@ -224,30 +227,16 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       return
     end
 
-    Dir.glob("#{tmp_dir}/**/*.*").each do |ext_filename|
-      ext_basename = File.basename(ext_filename)
-
-      begin
-        file = File.open(ext_filename)
-        file.each_line do |line|
-          @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
-          @codec.decode(line) do |event|
-            decorate(event)
-            event["host"] ||= hostname
-            event["path"] ||= path
-            queue << event
-          end
-        end
-      rescue
-        @logger.warn("An error occured when processing #{path}:#{ext_basename}. Ignoring...")
-      end
-    end
+    filenames = Dir.glob("#{tmp_dir}/**/*.*")
+    _process_extracted_files(queue, path, hostname, Dir.glob(filenames))
 
     FileUtils.rm_rf(tmp_dir)
   end # def process_tar_bzip2
 
   private
   def process_bzip2(queue, path, hostname)
+    return unless enforce_dependency('bzcat', 'bzip2', path)
+
     tmp_file = "/tmp/ls#{Time.now.to_i}"
 
     system("/usr/bin/env bzcat #{path.shellescape} > #{tmp_file}")
@@ -260,13 +249,7 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
     begin
       file = File.open(tmp_file)
       file.each_line do |line|
-        @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
-        @codec.decode(line) do |event|
-          decorate(event)
-          event["host"] ||= hostname
-          event["path"] ||= path
-          queue << event
-        end
+        _process_line(queue, path, hostname, line)
       end
     rescue
       @logger.warn("An error occured when processing #{path}. Ignoring...")
@@ -277,6 +260,8 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
 
   private
   def process_7zip(queue, path, hostname)
+    return unless enforce_dependency('7za', 'p7zip', path)
+
     tmp_dir = "/tmp/ls#{Time.now.to_i}"
 
     FileUtils.mkdir(tmp_dir)
@@ -288,30 +273,16 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       return
     end
 
-    Dir.glob("#{tmp_dir}/**/*.*").each do |ext_filename|
-      ext_basename = File.basename(ext_filename)
-
-      begin
-        file = File.open(ext_filename)
-        file.each_line do |line|
-          @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
-          @codec.decode(line) do |event|
-            decorate(event)
-            event["host"] ||= hostname
-            event["path"] ||= path
-            queue << event
-          end
-        end
-      rescue
-        @logger.warn("An error occured when processing #{path}:#{ext_basename}. Ignoring...")
-      end
-    end
+    filenames = Dir.glob("#{tmp_dir}/**/*.*")
+    _process_extracted_files(queue, path, hostname, Dir.glob(filenames))
 
     FileUtils.rm_rf(tmp_dir)
   end # def process_7zip
 
   private
   def process_rar(queue, path, hostname)
+    return unless enforce_dependency('unrar', 'unrar', path)
+
     tmp_dir = "/tmp/ls#{Time.now.to_i}"
 
     FileUtils.mkdir(tmp_dir)
@@ -323,25 +294,30 @@ class LogStash::Inputs::Archive < LogStash::Inputs::Base
       return
     end
 
-    Dir.glob("#{tmp_dir}/**/*.*").each do |ext_filename|
-      ext_basename = File.basename(ext_filename)
-
-      begin
-        file = File.open(ext_filename)
-        file.each_line do |line|
-          @logger.debug? && @logger.debug("Received line", :path => path, :text => line)
-          @codec.decode(line) do |event|
-            decorate(event)
-            event["host"] ||= hostname
-            event["path"] ||= path
-            queue << event
-          end
-        end
-      rescue
-        @logger.warn("An error occured when processing #{path}:#{ext_basename}. Ignoring...")
-      end
-    end
+    filenames = Dir.glob("#{tmp_dir}/**/*.*")
+    _process_extracted_files(queue, path, hostname, Dir.glob(filenames))
 
     FileUtils.rm_rf(tmp_dir)
   end # def process_rar
+
+  private
+  def process_zip(queue, path, hostname)
+    return unless enforce_dependency('unzip', 'unzip', path)
+
+    tmp_dir = "/tmp/ls#{Time.now.to_i}"
+
+    FileUtils.mkdir(tmp_dir)
+    system("/usr/bin/env unzip #{path.shellescape} -d #{tmp_dir} 2>&1 > /dev/null")
+
+    if $? != 0
+      @logger.warn("An error occured when extracting #{path}. Ignoring...")
+      FileUtils.rm_rf(tmp_dir)
+      return
+    end
+
+    filenames = Dir.glob("#{tmp_dir}/**/*.*")
+    _process_extracted_files(queue, path, hostname, Dir.glob(filenames))
+
+    FileUtils.rm_rf(tmp_dir)
+  end # def process_zip
 end # class LogStash::Inputs::File
